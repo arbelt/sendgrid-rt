@@ -1,0 +1,8 @@
+rules:
+  help@example.com:
+    action: correspond
+    queue: General
+  comment@example.com:
+    action: comment
+    queue: General
+key: "abcdefg"
