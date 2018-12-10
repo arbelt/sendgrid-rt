@@ -252,7 +252,7 @@ func getRoute(rules map[string]mailRule, eml *SGInboundRaw) rtMailData {
 		}
 	}
 	return rtMailData{
-		Action: "correspond",
+		Action: "comment",
 		Queue: "General",
 		Message: eml.Email,
 	}
