@@ -8,7 +8,6 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/schema"
-	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -21,30 +20,16 @@ import (
 	"time"
 )
 
-type mailRule struct {
-	Queue string `mapstructure:"queue"`
-	Action string `mapstructure:"action"`
-}
-
 type rtMailData struct {
-	Action string
-	Queue string
+	mailRule
 	Message string
 }
 
-type config struct {
-	Port int `mapstructure:"port"`
-	Address string `mapstructure:"address"`
-	RTUrl string `mapstructure:"rt_url"`
-	Key string `mapstructure:"key"`
-	Rules map[string]mailRule `mapstructure:"rules"`
-	Verbose int `mapstructure:"verbose"`
-}
-
 var (
-	conf config
-	hclient *http.Client
+	conf       config
+	hclient    *http.Client
 	rtEndpoint string
+	rules      ruleSet
 )
 
 func init() {
@@ -66,6 +51,7 @@ func init() {
 	viper.SetDefault("Address", "localhost")
 	viper.SetDefault("RT_Url", "http://127.0.0.1")
 	viper.SetDefault("key", "")
+	viper.SetDefault("default", defaultRule)
 	err := viper.ReadInConfig()
 	if err != nil {
 		log.WithError(err).Warn("Error reading config")
@@ -82,25 +68,15 @@ func init() {
 		log.SetLevel(log.DebugLevel)
 	}
 
-	ruleMap := viper.GetStringMap("rules")
+	rules = toRuleSet(conf.Rules)
 
-	conf.Rules = make(map[string]mailRule)
-	for k, v := range ruleMap {
-		var r mailRule
-		err = mapstructure.Decode(v, &r)
-		if err != nil {
-			log.WithError(err).Warn("error creating rule")
-			continue
-		}
-		conf.Rules[k] = r
-	}
+	log.Debug(spew.Sprintf("%+v", rules))
 
-	log.Debug(conf.RTUrl)
-	log.Debug(spew.Sdump(conf))
+	log.Debug(spew.Sprintf("%+v", conf))
 
 	rtEndpoint = fmt.Sprintf("%s/%s",
-			strings.TrimSuffix(conf.RTUrl, "/"),
-			"REST/1.0/NoAuth/mail-gateway")
+		strings.TrimSuffix(conf.RTUrl, "/"),
+		"REST/1.0/NoAuth/mail-gateway")
 
 	hclient = &http.Client{
 		Timeout: time.Second * 20,
@@ -110,10 +86,10 @@ func init() {
 	}
 }
 
-func main(){
+func main() {
 	router := mux.NewRouter()
 
-	mw := KeyMiddleware{Key:conf.Key}
+	mw := KeyMiddleware{Key: conf.Key}
 
 	router.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = fmt.Fprintln(writer, "Hello!")
@@ -131,14 +107,13 @@ func main(){
 
 	router.Use(mw.MiddleWare)
 
-
 	log.WithField("address", conf.Address).
 		WithField("port", conf.Port).
 		Info("server start")
 	log.WithField("address", rtEndpoint).Info("RT Endpoint")
 
 	server := http.Server{
-		Addr: fmt.Sprintf("%s:%d", conf.Address, conf.Port),
+		Addr:    fmt.Sprintf("%s:%d", conf.Address, conf.Port),
 		Handler: router,
 	}
 
@@ -149,19 +124,21 @@ func main(){
 }
 
 type envelope struct {
-	To []string `json:"to"`
-	From string `json:"from"`
+	To   []string `json:"to"`
+	From string   `json:"from"`
 }
 
 type Envelope struct {
 	*envelope
 }
 
-
 type SGInboundRaw struct {
-	Email string `schema:"email"`
-	To string `schema:"to"`
+	Email    string   `schema:"email"`
+	To       string   `schema:"to"`
 	Envelope Envelope `schema:"envelope"`
+	Cc       string   `schema:"cc"`
+	From     string   `schema:"from"`
+	Subject  string   `schema:"subject"`
 }
 
 func (e *Envelope) UnmarshalText(text []byte) (err error) {
@@ -216,11 +193,14 @@ func sgRawHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 
-	log.Debug(inbound.Email)
-	log.WithField("value", spew.Sdump(inbound.Envelope)).
-		Debug("envelope")
+	log.WithField("From", inbound.From).
+		WithField("To", inbound.To).
+		WithField("Cc", inbound.Cc).
+		WithField("Subject", inbound.Subject).
+		WithField("Envelope", spew.Sprintf("%+v", inbound.Envelope)).
+		Info("received email")
 
-	rtData := getRoute(conf.Rules, inbound)
+	rtData := getRoute(rules, inbound)
 
 	log.WithField("queue", rtData.Queue).
 		WithField("action", rtData.Action).
@@ -231,38 +211,33 @@ func sgRawHandler(w http.ResponseWriter, r *http.Request) {
 		log.WithError(err).Error("failed to post data")
 		return
 	}
-
-	for k,v := range r.Form {
-		log.WithField("key", k).
-			WithField("value", v).
-			Debug("received field")
-	}
 }
 
-
-func getRoute(rules map[string]mailRule, eml *SGInboundRaw) rtMailData {
+func getRoute(rules ruleSet, eml *SGInboundRaw) rtMailData {
 	for _, a := range eml.Envelope.To {
 		r, ok := rules[a]
 		if ok {
+			log.WithField("address", a).
+				WithField("action", r.Action).
+				WithField("queue", r.Queue).
+				Info("calculated route")
 			return rtMailData{
-				Message: eml.Email,
-				Queue: r.Queue,
-				Action: r.Action,
+				Message:  eml.Email,
+				mailRule: r,
 			}
 		}
 	}
+
 	return rtMailData{
-		Action: "comment",
-		Queue: "General",
-		Message: eml.Email,
+		mailRule: conf.Default,
+		Message:  eml.Email,
 	}
 }
 
-
 func postMailData(data rtMailData) (err error) {
 	form := url.Values{
-		"action": []string{data.Action},
-		"queue": []string{data.Queue},
+		"action":  []string{data.Action},
+		"queue":   []string{data.Queue},
 		"message": []string{data.Message},
 	}
 
@@ -281,4 +256,3 @@ func postMailData(data rtMailData) (err error) {
 		Info("RT response")
 	return
 }
-

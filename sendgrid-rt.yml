@@ -1,8 +1,11 @@
+sdefault:
+  queue: General
+  action: comment
 rules:
-  help@example.com:
+  - address: help@example.com
     action: correspond
     queue: General
-  comment@example.com:
+  - address: comment@example.com
     action: comment
     queue: General
 key: "abcdefg"
