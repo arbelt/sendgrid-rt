@@ -8,6 +8,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/schema"
+	"github.com/gorilla/handlers"
 	"github.com/pkg/errors"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -34,7 +35,7 @@ var (
 
 func init() {
 	log.SetHandler(text.New(os.Stdout))
-	log.SetLevel(log.ErrorLevel)
+	log.SetLevel(log.InfoLevel)
 
 	pflag.CountP("verbose", "v", "Verbosity")
 	pflag.Parse()
@@ -106,6 +107,7 @@ func main() {
 		HandlerFunc(sgRawHandler)
 
 	router.Use(mw.MiddleWare)
+	router.Use(handlers.RecoveryHandler())
 
 	log.WithField("address", conf.Address).
 		WithField("port", conf.Port).
