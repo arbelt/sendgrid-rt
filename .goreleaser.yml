@@ -18,10 +18,11 @@ builds:
     - amd64
   hooks:
     post: make upx
-archive:
-  name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
-  format: binary
-  replacements:
+archives:
+  - id: foo
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format: binary
+    replacements:
     # darwin: Darwin
     # linux: Linux
     # windows: Windows
